@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VRAM-Samurai // 3D Real-Time Inference & KV-Cache HUD</title>
+  <style>
+    :root {
+      --bg: #060911;
+      --card-bg: rgba(10, 16, 30, 0.75);
+      --card-border: rgba(0, 240, 255, 0.25);
+      --cyan: #00f0ff;
+      --cyan-glow: rgba(0, 240, 255, 0.4);
+      --amber: #ffb800;
+      --crimson: #ff003c;
+      --green: #00ff88;
+      --text: #e2e8f0;
+      --text-muted: #64748b;
+      --font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: var(--font-mono);
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    #webgl-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+    }
+
+    /* Cyberpunk Scanlines & Vignette */
+    .overlay-vignette {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: radial-gradient(circle at center, transparent 40%, rgba(3, 5, 12, 0.85) 100%);
+      z-index: 2;
+    }
+
+    .overlay-scanlines {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%);
+      background-size: 100% 4px;
+      z-index: 2;
+      opacity: 0.6;
+    }
+
+    /* HUD Layout */
+    .hud-layer {
+      position: absolute;
+      inset: 0;
+      z-index: 10;
+      pointer-events: none;
+      display: grid;
+      grid-template-rows: 64px 1fr 180px;
+      grid-template-columns: 360px 1fr 380px;
+      padding: 16px;
+      gap: 16px;
+    }
+
+    .interactive {
+      pointer-events: auto;
+    }
+
+    /* Header */
+    header.hud-header {
+      grid-column: 1 / -1;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 0 20px;
+      box-shadow: 0 0 20px rgba(0, 240, 255, 0.1);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-badge {
+      background: var(--cyan);
+      color: #000;
+      font-weight: 800;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      letter-spacing: 1px;
+    }
+
+    .brand-title {
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #fff;
+      text-shadow: 0 0 10px var(--cyan-glow);
+    }
+
+    .brand-subtitle {
+      font-size: 11px;
+      color: var(--text-muted);
+      letter-spacing: 1px;
+    }
+
+    .header-status {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      font-size: 12px;
+    }
+
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(0, 255, 136, 0.1);
+      border: 1px solid rgba(0, 255, 136, 0.3);
+      padding: 4px 12px;
+      border-radius: 20px;
+      color: var(--green);
+      transition: all 0.3s ease;
+    }
+
+    .status-pill.disconnected {
+      background: rgba(255, 184, 0, 0.1);
+      border-color: rgba(255, 184, 0, 0.3);
+      color: var(--amber);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
+      animation: pulse 1.8s infinite;
+    }
+
+    .status-pill.disconnected .status-dot {
+      background: var(--amber);
+      box-shadow: 0 0 8px var(--amber);
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+
+    /* Left Sidebar: Telemetry Gauges */
+    .hud-panel {
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    }
+
+    .panel-title {
+      font-size: 11px;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: var(--cyan);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(0, 240, 255, 0.15);
+      padding-bottom: 6px;
+      font-weight: 700;
+    }
+
+    .metric-card {
+      background: rgba(4, 9, 20, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 6px;
+      padding: 10px 12px;
+    }
+
+    .metric-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+
+    .metric-value {
+      font-size: 26px;
+      font-weight: 800;
+      color: #fff;
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+
+    .metric-unit {
+      font-size: 12px;
+      color: var(--cyan);
+      font-weight: 400;
+    }
+
+    .metric-bar-bg {
+      height: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 3px;
+      overflow: hidden;
+      margin-top: 8px;
+    }
+
+    .metric-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--cyan), #3b82f6);
+      border-radius: 3px;
+      transition: width 0.3s ease;
+    }
+
+    /* Sparkline Canvas */
+    .sparkline-canvas {
+      width: 100%;
+      height: 38px;
+      margin-top: 6px;
+    }
+
+    /* Center: 3D Scene Controls */
+    .center-hud {
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      align-items: center;
+      padding-bottom: 10px;
+    }
+
+    .matrix-legend {
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--card-border);
+      border-radius: 24px;
+      padding: 8px 18px;
+      display: flex;
+      gap: 18px;
+      font-size: 11px;
+      color: var(--text);
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .legend-chip {
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+    }
+
+    /* Right Sidebar: Live Token Stream Waterfall */
+    .stream-container {
+      flex: 1;
+      background: rgba(3, 7, 18, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 6px;
+      padding: 10px;
+      overflow-y: auto;
+      font-size: 11px;
+      line-height: 1.6;
+      display: flex;
+      flex-direction: column-reverse;
+      max-height: calc(100vh - 340px);
+    }
+
+    .token-item {
+      display: flex;
+      justify-content: space-between;
+      border-bottom: 1px dashed rgba(255, 255, 255, 0.05);
+      padding: 3px 0;
+      color: #94a3b8;
+    }
+
+    .token-text {
+      color: #38bdf8;
+      font-weight: 600;
+    }
+
+    .token-latency {
+      color: var(--amber);
+      font-size: 10px;
+    }
+
+    /* Bottom Dock: Controls & Diagnostics */
+    footer.hud-footer {
+      grid-column: 1 / -1;
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 12px 20px;
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 20px;
+      align-items: center;
+    }
+
+    .control-btn {
+      background: rgba(0, 240, 255, 0.1);
+      border: 1px solid var(--cyan);
+      color: var(--cyan);
+      padding: 8px 16px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .control-btn:hover {
+      background: var(--cyan);
+      color: #000;
+      box-shadow: 0 0 15px var(--cyan);
+    }
+
+    .control-btn.active {
+      background: var(--amber);
+      border-color: var(--amber);
+      color: #000;
+    }
+  </style>
+</head>
+<body>
+  <!-- WebGL Canvas for 3D Three.js Scene -->
+  <div id="webgl-canvas"></div>
+  <div class="overlay-vignette"></div>
+  <div class="overlay-scanlines"></div>
+
+  <!-- HUD Interface Layer -->
+  <div class="hud-layer">
+    <!-- Header -->
+    <header class="hud-header interactive">
+      <div class="brand">
+        <span class="brand-badge">PROFILER</span>
+        <div>
+          <div class="brand-title">VRAM-SAMURAI // 3D HUD</div>
+          <div class="brand-subtitle">REAL-TIME INFERENCE & KV-CACHE SPATIAL PROFILER</div>
+        </div>
+      </div>
+      <div class="header-status">
+        <div class="status-pill" id="ws-status-pill">
+          <span class="status-dot"></span>
+          <span id="runtime-status">CONNECTING WS...</span>
+        </div>
+        <div style="color: var(--text-muted)">TARGET: <span style="color:#fff;" id="target-device">NVML / UNIFIED</span></div>
+        <div style="color: var(--text-muted)">CONTEXT: <span style="color:var(--cyan);" id="ctx-display">0 / 8,192</span></div>
+      </div>
+    </header>
+
+    <!-- Left Column: Real-time Telemetry Gauges -->
+    <aside class="hud-panel interactive">
+      <div class="panel-title">
+        <span>INFERENCE LATENCY</span>
+        <span id="probe-status">STEP 2 LIVE</span>
+      </div>
+
+      <!-- TTFT Metric -->
+      <div class="metric-card">
+        <div class="metric-header">
+          <span>TIME TO FIRST TOKEN (TTFT)</span>
+          <span id="ttft-delta" style="color:var(--green)">OPTIMAL</span>
+        </div>
+        <div class="metric-value">
+          <span id="ttft-val">--</span>
+          <span class="metric-unit">ms</span>
+        </div>
+        <canvas id="ttft-sparkline" class="sparkline-canvas"></canvas>
+      </div>
+
+      <!-- ITL (Inter-Token Latency) -->
+      <div class="metric-card">
+        <div class="metric-header">
+          <span>INTER-TOKEN LATENCY (ITL)</span>
+          <span id="itl-p95">P95: --ms</span>
+        </div>
+        <div class="metric-value">
+          <span id="itl-val">--</span>
+          <span class="metric-unit">ms / tok</span>
+        </div>
+        <canvas id="itl-sparkline" class="sparkline-canvas"></canvas>
+      </div>
+
+      <!-- Throughput -->
+      <div class="metric-card">
+        <div class="metric-header">
+          <span>GENERATION THROUGHPUT</span>
+          <span style="color:var(--cyan)" id="tps-header">0.0 TPS</span>
+        </div>
+        <div class="metric-value">
+          <span id="tps-val">0.0</span>
+          <span class="metric-unit">tokens / sec</span>
+        </div>
+        <div class="metric-bar-bg">
+          <div id="tps-bar" class="metric-bar-fill" style="width: 0%;"></div>
+        </div>
+      </div>
+
+      <!-- VRAM & KV-Cache Allocation -->
+      <div class="metric-card">
+        <div class="metric-header">
+          <span>KV-CACHE ALLOCATION</span>
+          <span id="vram-pct" style="color:var(--amber)">0.0%</span>
+        </div>
+        <div class="metric-value">
+          <span id="vram-gb">0.0</span>
+          <span class="metric-unit" id="vram-total-label">/ -- GB</span>
+        </div>
+        <div class="metric-bar-bg">
+          <div id="vram-bar" class="metric-bar-fill" style="width: 0%; background: linear-gradient(90deg, #00f0ff, #ffb800);"></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Center: 3D Viewport Controls & Legend -->
+    <main class="center-hud">
+      <div class="matrix-legend interactive">
+        <div class="legend-item">
+          <div class="legend-chip" style="background: #00f0ff; box-shadow: 0 0 6px #00f0ff;"></div>
+          <span>Active Context Blocks (<span id="count-active">0</span>)</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-chip" style="background: #ffb800; box-shadow: 0 0 6px #ffb800;"></div>
+          <span>Cached Prefix (<span id="count-prefix">0</span>)</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-chip" style="background: #ff003c; box-shadow: 0 0 6px #ff003c;"></div>
+          <span>Evicted / Fragmented (<span id="count-frag">0</span>)</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-chip" style="background: rgba(255,255,255,0.15);"></div>
+          <span>Free Headroom</span>
+        </div>
+      </div>
+    </main>
+
+    <!-- Right Column: Real-time Token Stream & Waterfalls -->
+    <aside class="hud-panel interactive">
+      <div class="panel-title">
+        <span>TOKEN GENERATION STREAM</span>
+        <span id="stream-count">STANDBY</span>
+      </div>
+
+      <div class="stream-container" id="token-stream">
+        <!-- Tokens dynamically appended here -->
+      </div>
+
+      <div style="display:flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); padding-top: 4px;">
+        <span id="telemetry-source">TELEMETRY: WS // 127.0.0.1:8765</span>
+        <span>LATENCY JITTER: <span style="color:var(--green)">0.03ms</span></span>
+      </div>
+    </aside>
+
+    <!-- Bottom Footer: Controls -->
+    <footer class="hud-footer interactive">
+      <div style="display: flex; gap: 12px; align-items: center;">
+        <button class="control-btn" id="btn-burst">
+          ⚡ TRIGGER INFERENCE BURST
+        </button>
+        <button class="control-btn" id="btn-orbit">
+          🔄 AUTO-ORBIT: ON
+        </button>
+      </div>
+
+      <div style="text-align: center; font-size: 11px; color: var(--text-muted);">
+        <span>SPATIAL MEMORY GRID: <strong style="color:#fff;">16 × 16 × 4 (1,024 KV Pages)</strong></span>
+        <br>
+        <span>CLICK + DRAG TO ORBIT // SCROLL TO ZOOM</span>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 12px; align-items: center;">
+        <div style="font-size: 11px; text-align: right;">
+          <div style="color: var(--cyan)">STEP 2 LIVE TELEMETRY BRIDGE</div>
+          <div style="color: var(--text-muted)">CONNECTED TO OBITO'S SAMPLER</div>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Three.js + OrbitControls (Local Vendor) -->
+  <script src="vendor/three.min.js"></script>
+  <script src="vendor/OrbitControls.js"></script>
+
+  <script>
+    // -------------------------------------------------------------
+    // VRAM-SAMURAI 3D ENGINE (Three.js Spatial KV-Cache Matrix)
+    // -------------------------------------------------------------
+    const container = document.getElementById('webgl-canvas');
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x060911, 0.015);
+
+    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(24, 20, 28);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+    container.appendChild(renderer.domElement);
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.maxPolarAngle = Math.PI / 2 + 0.1;
+    controls.minDistance = 10;
+    controls.maxDistance = 80;
+
+    let autoOrbit = true;
+
+    // Ambient & Accent Lights
+    const ambientLight = new THREE.AmbientLight(0x0a1428, 1.5);
+    scene.add(ambientLight);
+
+    const cyanLight = new THREE.PointLight(0x00f0ff, 3, 50);
+    cyanLight.position.set(0, 15, 0);
+    scene.add(cyanLight);
+
+    const amberLight = new THREE.PointLight(0xffb800, 2, 40);
+    amberLight.position.set(15, -10, 15);
+    scene.add(amberLight);
+
+    // Grid Floor
+    const gridHelper = new THREE.GridHelper(60, 40, 0x00f0ff, 0x0f2137);
+    gridHelper.position.y = -6;
+    scene.add(gridHelper);
+
+    // -------------------------------------------------------------
+    // KV-Cache 3D Spatial Grid (InstancedMesh for maximum 60FPS speed)
+    // -------------------------------------------------------------
+    const GRID_X = 16;
+    const GRID_Y = 4;
+    const GRID_Z = 16;
+    const TOTAL_BLOCKS = GRID_X * GRID_Y * GRID_Z; // 1,024 blocks
+    const SPACING = 1.25;
+
+    const boxGeometry = new THREE.BoxGeometry(0.85, 0.85, 0.85);
+    const boxMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.2,
+      metalness: 0.8,
+      transparent: true,
+      opacity: 0.85
+    });
+
+    const instancedMesh = new THREE.InstancedMesh(boxGeometry, boxMaterial, TOTAL_BLOCKS);
+    instancedMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(instancedMesh);
+
+    // Colors
+    const COLOR_FREE = new THREE.Color(0x131f33);
+    const COLOR_ACTIVE = new THREE.Color(0x00f0ff);
+    const COLOR_PREFIX = new THREE.Color(0xffb800);
+    const COLOR_FRAGMENTED = new THREE.Color(0xff003c);
+
+    const blockStates = new Uint8Array(TOTAL_BLOCKS); // 0=free, 1=active, 2=prefix, 3=frag
+    const dummy = new THREE.Object3D();
+
+    function initGrid() {
+      let idx = 0;
+      const offsetX = (GRID_X * SPACING) / 2;
+      const offsetY = (GRID_Y * SPACING) / 2;
+      const offsetZ = (GRID_Z * SPACING) / 2;
+
+      for (let x = 0; x < GRID_X; x++) {
+        for (let y = 0; y < GRID_Y; y++) {
+          for (let z = 0; z < GRID_Z; z++) {
+            dummy.position.set(
+              x * SPACING - offsetX,
+              y * SPACING - offsetY,
+              z * SPACING - offsetZ
+            );
+            dummy.scale.set(1, 1, 1);
+            dummy.updateMatrix();
+            instancedMesh.setMatrixAt(idx, dummy.matrix);
+
+            blockStates[idx] = 0; // free initially
+            instancedMesh.setColorAt(idx, COLOR_FREE);
+            idx++;
+          }
+        }
+      }
+      instancedMesh.instanceMatrix.needsUpdate = true;
+      if (instancedMesh.instanceColor) instancedMesh.instanceColor.needsUpdate = true;
+    }
+
+    function updateBlockColor(index, state) {
+      if (state === 0) instancedMesh.setColorAt(index, COLOR_FREE);
+      else if (state === 1) instancedMesh.setColorAt(index, COLOR_ACTIVE);
+      else if (state === 2) instancedMesh.setColorAt(index, COLOR_PREFIX);
+      else if (state === 3) instancedMesh.setColorAt(index, COLOR_FRAGMENTED);
+    }
+
+    function applyMemoryLayout(activeCount, prefixCount, fragCount) {
+      document.getElementById('count-active').innerText = activeCount;
+      document.getElementById('count-prefix').innerText = prefixCount;
+      document.getElementById('count-frag').innerText = fragCount;
+
+      for (let i = 0; i < TOTAL_BLOCKS; i++) {
+        let state = 0;
+        if (i < prefixCount) {
+          state = 2; // prefix cached
+        } else if (i < prefixCount + activeCount) {
+          state = 1; // active context
+        } else if (i < prefixCount + activeCount + fragCount) {
+          state = 3; // fragmented
+        } else {
+          state = 0; // free
+        }
+        blockStates[i] = state;
+        updateBlockColor(i, state);
+      }
+      if (instancedMesh.instanceColor) instancedMesh.instanceColor.needsUpdate = true;
+    }
+
+    initGrid();
+
+    // -------------------------------------------------------------
+    // Telemetry Sparklines
+    // -------------------------------------------------------------
+    function createSparkline(canvasId, lineColor) {
+      const cvs = document.getElementById(canvasId);
+      const ctx = cvs.getContext('2d');
+      cvs.width = cvs.offsetWidth * 2;
+      cvs.height = cvs.offsetHeight * 2;
+      const data = Array(25).fill(0);
+
+      function draw(newValue) {
+        data.push(newValue);
+        data.shift();
+
+        ctx.clearRect(0, 0, cvs.width, cvs.height);
+        ctx.beginPath();
+        const nonZero = data.filter(v => v > 0);
+        const min = nonZero.length ? Math.min(...nonZero) * 0.8 : 0;
+        const max = nonZero.length ? Math.max(...nonZero) * 1.2 : 50;
+        const step = cvs.width / (data.length - 1);
+
+        for (let i = 0; i < data.length; i++) {
+          const x = i * step;
+          const y = cvs.height - ((data[i] - min) / (max - min || 1)) * cvs.height;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+
+        ctx.strokeStyle = lineColor;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+      }
+
+      return { draw };
+    }
+
+    const ttftSpark = createSparkline('ttft-sparkline', '#00ff88');
+    const itlSpark = createSparkline('itl-sparkline', '#00f0ff');
+
+    const tokenStreamEl = document.getElementById('token-stream');
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function appendStreamToken(tok, latencyMs, isFirst) {
+      const item = document.createElement('div');
+      item.className = 'token-item';
+      const label = isFirst ? `[TTFT] ${tok}` : tok;
+      const colorStyle = isFirst ? 'color: var(--green);' : '';
+      item.innerHTML = `<span class="token-text" style="${colorStyle}">${escapeHtml(label)}</span><span class="token-latency">${latencyMs}ms</span>`;
+      tokenStreamEl.prepend(item);
+
+      if (tokenStreamEl.children.length > 50) {
+        tokenStreamEl.removeChild(tokenStreamEl.lastChild);
+      }
+    }
+
+    // -------------------------------------------------------------
+    // Live WebSocket Telemetry Conduit (Connects to sampler/server.py)
+    // -------------------------------------------------------------
+    const WS_URL = 'ws://127.0.0.1:8765';
+    let socket = null;
+    let wsConnected = false;
+    let fallbackTimer = null;
+
+    function connectWebSocket() {
+      const statusPill = document.getElementById('ws-status-pill');
+      const runtimeStatus = document.getElementById('runtime-status');
+
+      try {
+        socket = new WebSocket(WS_URL);
+
+        socket.onopen = () => {
+          wsConnected = true;
+          statusPill.classList.remove('disconnected');
+          runtimeStatus.innerText = 'WS LIVE // 127.0.0.1:8765';
+          document.getElementById('telemetry-source').innerText = 'TELEMETRY: WEBSOCKET LIVE';
+          if (fallbackTimer) {
+            clearInterval(fallbackTimer);
+            fallbackTimer = null;
+          }
+        };
+
+        socket.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            handleIncomingPacket(msg);
+          } catch (e) {
+            console.error('Failed to parse WS payload:', e);
+          }
+        };
+
+        socket.onclose = () => {
+          wsConnected = false;
+          statusPill.classList.add('disconnected');
+          runtimeStatus.innerText = 'OFFLINE SIMULATION (RETRYING)';
+          document.getElementById('telemetry-source').innerText = 'TELEMETRY: OFFLINE SIM';
+          startFallbackSimulation();
+          setTimeout(connectWebSocket, 3000);
+        };
+
+        socket.onerror = () => {
+          socket.close();
+        };
+      } catch (err) {
+        wsConnected = false;
+        startFallbackSimulation();
+        setTimeout(connectWebSocket, 3000);
+      }
+    }
+
+    function handleIncomingPacket(msg) {
+      if (msg.type === 'vram_snapshot') {
+        const vram = msg.data;
+        updateVRAMUI(vram);
+        applyMemoryLayout(vram.active_blocks, vram.prefix_cached_blocks, vram.fragmented_blocks);
+      } else if (msg.type === 'token_delta') {
+        const { token, metrics, vram } = msg.data;
+
+        // Update token stream
+        appendStreamToken(token.token, token.latency_ms, token.is_first_token);
+
+        // Update metrics
+        if (metrics.ttft_ms !== null && metrics.ttft_ms !== undefined) {
+          document.getElementById('ttft-val').innerText = metrics.ttft_ms.toFixed(1);
+          ttftSpark.draw(metrics.ttft_ms);
+        }
+
+        document.getElementById('itl-val').innerText = token.latency_ms.toFixed(1);
+        itlSpark.draw(token.latency_ms);
+        document.getElementById('itl-p95').innerText = `P95: ${metrics.itl_p95_ms}ms`;
+
+        document.getElementById('tps-val').innerText = metrics.throughput_tps.toFixed(1);
+        document.getElementById('tps-header').innerText = `${metrics.throughput_tps.toFixed(1)} TPS`;
+        const tpsPct = Math.min(100, (metrics.throughput_tps / 120) * 100);
+        document.getElementById('tps-bar').style.width = `${tpsPct}%`;
+
+        document.getElementById('stream-count').innerText = `${metrics.total_tokens} TOKENS`;
+        document.getElementById('ctx-display').innerText = `${metrics.total_tokens * 64} / 8,192`;
+
+        // Update VRAM & 3D Grid
+        if (vram) {
+          updateVRAMUI(vram);
+          applyMemoryLayout(vram.active_blocks, vram.prefix_cached_blocks, vram.fragmented_blocks);
+        }
+      }
+    }
+
+    function updateVRAMUI(vram) {
+      document.getElementById('target-device').innerText = vram.device_name.toUpperCase();
+      const usedGb = (vram.allocated_mb / 1024.0).toFixed(1);
+      const totalGb = (vram.total_mb / 1024.0).toFixed(1);
+      document.getElementById('vram-gb').innerText = usedGb;
+      document.getElementById('vram-total-label').innerText = `/ ${totalGb} GB`;
+      document.getElementById('vram-pct').innerText = `${vram.utilization_pct.toFixed(1)}%`;
+      document.getElementById('vram-bar').style.width = `${vram.utilization_pct}%`;
+    }
+
+    // -------------------------------------------------------------
+    // Fallback Simulation (Used when server is not actively running)
+    // -------------------------------------------------------------
+    const sampleTokens = [
+      "The", " KV", "-cache", " paging", " algorithm", " guarantees", " deterministic",
+      " latency", " by", " pre", "-allocating", " contiguous", " virtual", " pages",
+      " across", " GPU", " high", "-bandwidth", " memory", " with", " zero", " fragmentation", "."
+    ];
+    let fallbackTokIdx = 0;
+
+    function startFallbackSimulation() {
+      if (fallbackTimer) return;
+      fallbackTimer = setInterval(() => {
+        if (wsConnected) return;
+        const tok = sampleTokens[fallbackTokIdx % sampleTokens.length];
+        fallbackTokIdx++;
+        const latency = (Math.random() * 4 + 11).toFixed(1);
+
+        appendStreamToken(tok, latency, false);
+        document.getElementById('itl-val').innerText = latency;
+        itlSpark.draw(parseFloat(latency));
+        const tps = (1000 / parseFloat(latency)).toFixed(1);
+        document.getElementById('tps-val').innerText = tps;
+        document.getElementById('tps-header').innerText = `${tps} TPS`;
+        document.getElementById('tps-bar').style.width = `${Math.min(100, (tps / 120) * 100)}%`;
+
+        // Slight dynamic variance in active blocks
+        const active = Math.min(1024, 250 + (fallbackTokIdx * 4) % 400);
+        const prefix = Math.floor(active * 0.25);
+        applyMemoryLayout(active, prefix, 0);
+      }, 150);
+    }
+
+    // Trigger Burst action
+    document.getElementById('btn-burst').addEventListener('click', () => {
+      if (wsConnected && socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ action: 'trigger_burst' }));
+      } else {
+        // Local burst animation
+        const burstLatency = (Math.random() * 10 + 35).toFixed(1);
+        document.getElementById('ttft-val').innerText = burstLatency;
+        ttftSpark.draw(parseFloat(burstLatency));
+        applyMemoryLayout(550, 180, 95);
+      }
+    });
+
+    // Orbit toggle
+    document.getElementById('btn-orbit').addEventListener('click', (e) => {
+      autoOrbit = !autoOrbit;
+      e.target.innerText = `🔄 AUTO-ORBIT: ${autoOrbit ? 'ON' : 'OFF'}`;
+      e.target.classList.toggle('active', !autoOrbit);
+    });
+
+    // Window Resize
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Render loop (decoupled 60 FPS)
+    function animate() {
+      requestAnimationFrame(animate);
+      if (autoOrbit) {
+        scene.rotation.y += 0.003;
+      }
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // Start WebSocket connection
+    connectWebSocket();
+  </script>
+</body>
+</html>

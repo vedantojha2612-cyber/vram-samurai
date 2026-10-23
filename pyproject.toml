@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vram-samurai"
+version = "0.1.0"
+description = "Real-time KV-cache & PagedAttention visualizer with zero-overhead telemetry for local LLMs"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Saarthak Ojha", email = "vedantojha2612@gmail.com"}
+]
+keywords = [
+    "llm",
+    "kv-cache",
+    "paged-attention",
+    "telemetry",
+    "vram",
+    "profiler",
+    "tui",
+    "threejs",
+    "ollama",
+    "vllm"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    "pydantic>=2.0.0",
+    "websockets>=12.0",
+    "httpx>=0.25.0",
+    "psutil>=5.9.0",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "pynvml>=11.5.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[project.scripts]
+vram-samurai = "cli:main"
+
+[project.urls]
+Homepage = "https://github.com/vedantojha2612-cyber/vram-samurai"
+Repository = "https://github.com/vedantojha2612-cyber/vram-samurai"
+"Bug Tracker" = "https://github.com/vedantojha2612-cyber/vram-samurai/issues"
